@@ -1,0 +1,58 @@
+# 全体
+* メイン画面のレイアウトを、「データ登録」と「工数分析」の２つのタブで切り替えるスタイルにする。
+* Legend タイトルが USER_FIELD_02, USER_FIELD_03 となっているので、作業中分類、作業小分類にする。
+
+# 作業内容 type
+* グルーピング方法に「すべて」を追加し、「すべて」と「作業内容別」の振る舞いを以下にする。グローバルフィルターでデータを絞った場合も同様。
+ - グルーピング方法が「すべて」の場合は USER_FIELD_02 別のスタック棒グラフにする
+ - グルーピング方法が「作業内容別」の場合は USER_FIELD_03 別の棒グラフにする
+* hover 表示の各行は「タイトル：値」のフォーマットにする。たとえば、以下のようになる。
+　作業大分類：標準作業
+　作業中分類：基本設計
+　作業時間(h)：32.5
+
+# 時間推移 type
+* hover 表示の各表はは「タイトル：値」のフォーマットにする。
+* グルーピング方法が「すべて」と「作業内容別」の場合の hover 表示は、表示しているフィルター項目に合わせて、年月（yyyy-mm）、作業大分類、作業中分類、作業小分類の各値と作業時間(h)の値を表示する。たとえば、以下のようになる。
+　年月：2025-10
+　作業大分類：標準作業
+　作業中分類：基本設計
+　作業小分類：その他
+　作業時間(h)：32.5
+
+# 表示データのプレビュー
+* 次のカラムは表示しない：USER_FIELD_04, USER_FIELD_05, 第1分類, 第2分類, 第3分類,業務内容
+
+# エラーとなるグラフ表示
+* 時間推移タイプ：グルーピング方法＝個人別, UNIT別　と 個人タイプ、UNITタイプで以下のエラーとなる。（KeyError の部分はグラフタイプによって変わる）
+
+KeyError: '個人別'
+File "/Users/ryozo/Dropbox/Client/ULVAC/ElectricDesignManagement/Tools/Effort-Dashboard/app.py", line 464, in <module>
+    fig = create_time_series_chart(df_local_filtered, group_by, range_label=selected_period_label)
+File "/Users/ryozo/Dropbox/Client/ULVAC/ElectricDesignManagement/Tools/Effort-Dashboard/utils/visualization.py", line 266, in create_time_series_chart
+    df.groupby(['年', '月', group_field])['作業時間(h)']
+    ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "/Users/ryozo/Python/venv/lib/python3.13/site-packages/pandas/core/frame.py", line 9210, in groupby
+    return DataFrameGroupBy(
+        obj=self,
+    ...<7 lines>...
+        dropna=dropna,
+    )
+File "/Users/ryozo/Python/venv/lib/python3.13/site-packages/pandas/core/groupby/groupby.py", line 1331, in __init__
+    grouper, exclusions, obj = get_grouper(
+                               ~~~~~~~~~~~^
+        obj,
+        ^^^^
+    ...<5 lines>...
+        dropna=self.dropna,
+        ^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+File "/Users/ryozo/Python/venv/lib/python3.13/site-packages/pandas/core/groupby/grouper.py", line 1043, in get_grouper
+    raise KeyError(gpr)
+
+# 以下のワーニングが出力される
+`use_container_width` will be removed after 2025-12-31.
+
+For `use_container_width=True`, use `width='stretch'`. For `use_container_width=False`, use `width='content'`.
+2026-01-11 01:04:05.390 Please replace `use_container_width` with `width`.
