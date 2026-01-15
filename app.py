@@ -410,10 +410,10 @@ elif selected_tab == "工数分析グラフ":
                 range_label=period_label
             )
 
-            st.plotly_chart(fig, use_container_width=True, config={})
+            st.plotly_chart(fig, use_container_width=True, config=None)
 
             # データテーブル（折りたたみ式）
-            with st.expander("作業時間[h] リスト", expanded=False):
+            with st.expander("データテーブル：作業時間[h]", expanded=False):
                 data_table = create_chart_data_table(
                     df_filtered,
                     x_field=x_field,
@@ -421,7 +421,7 @@ elif selected_tab == "工数分析グラフ":
                     x_axis_label=x_axis,
                     grouping_label=grouping
                 )
-                st.dataframe(data_table, use_container_width=True)
+                st.dataframe(data_table, width='stretch')
         else:
             st.warning("フィルター条件に一致するデータがありません")
 
