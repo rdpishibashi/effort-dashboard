@@ -67,7 +67,7 @@ def render_sidebar_overview(placeholder):
     """Render application instructions in the sidebar."""
     placeholder.empty()
     with placeholder.container():
-        with st.expander("ℹ️ 使い方ガイド", expanded=True):
+        with st.expander("ℹ️ 使い方ガイド", expanded=False):
             st.markdown(
                 "**＜データ登録＞**\n"
                 "工数データを登録（アップロード）します。２つの登録方法があります。\n"
@@ -90,8 +90,8 @@ def render_data_status():
     merged_df = st.session_state.get('merged_data')
     st.sidebar.subheader("データの状態")
     if merged_df is not None:
-        st.sidebar.metric("総データ件数", f"{len(merged_df):,}")
-        st.sidebar.metric("総作業時間", f"{merged_df['作業時間(h)'].sum():.1f} h")
+        st.sidebar.markdown(f"総データ件数：**{len(merged_df):,}**")
+        st.sidebar.markdown(f"総作業時間：**{merged_df['作業時間(h)'].sum():.1f} h**")
         st.sidebar.caption("現在登録されている総工数ファイルの概要です。")
     else:
         st.sidebar.info("総工数ファイルがまだ登録されていません。")
@@ -155,7 +155,7 @@ with tab_data_entry:
         st.subheader("既存の総工数データファイルをアップロード")
 
         analysis_file = st.file_uploader(
-            "総工数データファイルをアップロード（または merged_efforts.xlsx がデフォルト）",
+            "総工数データファイルをアップロード",
             type=['xlsx'],
             key="analysis_upload"
         )
