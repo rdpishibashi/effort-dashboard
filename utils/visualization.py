@@ -514,6 +514,79 @@ def create_unit_chart(df, selected_unit, grouping_method, range_label=None):
     return fig
 
 
+def create_chart_data_table(df, x_field, group_field, x_axis_label, grouping_label):
+    """
+    Create a pivot table DataFrame for the chart data.
+
+    Args:
+        df: Filtered dataframe
+        x_field: Actual column name for x-axis (rows)
+        group_field: Actual column name for grouping (columns)
+        x_axis_label: Display label for x-axis
+        grouping_label: Display label for grouping
+
+    Returns:
+        DataFrame with x_field as index, group_field as columns, 作業時間(h) as values
+    """
+    if x_field == group_field:
+        # Simple aggregation when same field
+        agg_data = (
+            df.groupby([x_field])['作業時間(h)']
+            .sum()
+            .reset_index()
+        )
+        # Sort values
+        if x_field == '年月':
+            x_values = sorted(agg_data[x_field].unique().tolist())
+        else:
+            x_values = sort_with_config(agg_data[x_field].dropna().unique().tolist(), x_field)
+
+        agg_data[x_field] = pd.Categorical(agg_data[x_field], categories=x_values, ordered=True)
+        agg_data = agg_data.sort_values(x_field)
+        agg_data = agg_data.set_index(x_field)
+        agg_data.index.name = x_axis_label
+        agg_data.columns = ['作業時間[h]']
+        # Format to always show 1 decimal place (e.g., 12 -> "12.0")
+        agg_data = agg_data.map(lambda x: f"{x:.1f}")
+        return agg_data
+    else:
+        # Pivot table when different fields
+        agg_data = (
+            df.groupby([x_field, group_field])['作業時間(h)']
+            .sum()
+            .reset_index()
+        )
+
+        # Sort x-axis values
+        if x_field == '年月':
+            x_values = sorted(agg_data[x_field].unique().tolist())
+        else:
+            x_values = sort_with_config(agg_data[x_field].dropna().unique().tolist(), x_field)
+
+        # Sort grouping values
+        group_values = sort_with_config(agg_data[group_field].dropna().unique().tolist(), group_field)
+
+        # Create pivot table
+        pivot_df = agg_data.pivot(index=x_field, columns=group_field, values='作業時間(h)')
+
+        # Reorder rows and columns
+        pivot_df = pivot_df.reindex(index=x_values, columns=group_values)
+
+        # Fill NaN with 0
+        pivot_df = pivot_df.fillna(0)
+
+        # Format to always show 1 decimal place (e.g., 12 -> "12.0")
+        pivot_df = pivot_df.map(lambda x: f"{x:.1f}")
+
+        # Rename index
+        pivot_df.index.name = x_axis_label
+
+        # Rename columns header to 作業時間[h]
+        pivot_df.columns.name = '作業時間[h]'
+
+        return pivot_df
+
+
 def create_unified_chart(df, x_field, group_field, x_axis_label, grouping_label, range_label=None):
     """
     Create a unified chart based on x_field and group_field selection.

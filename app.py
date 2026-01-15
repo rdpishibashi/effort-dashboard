@@ -14,7 +14,8 @@ from utils.data_merger import process_multiple_monthly_files
 from utils.visualization import (
     filter_data_by_period,
     get_available_business_content_columns,
-    sort_with_config
+    sort_with_config,
+    create_chart_data_table
 )
 
 st.set_page_config(
@@ -410,6 +411,17 @@ elif selected_tab == "工数分析グラフ":
             )
 
             st.plotly_chart(fig, use_container_width=True, config={})
+
+            # データテーブル（折りたたみ式）
+            with st.expander("作業時間[h] リスト", expanded=False):
+                data_table = create_chart_data_table(
+                    df_filtered,
+                    x_field=x_field,
+                    group_field=group_field,
+                    x_axis_label=x_axis,
+                    grouping_label=grouping
+                )
+                st.dataframe(data_table, use_container_width=True)
         else:
             st.warning("フィルター条件に一致するデータがありません")
 

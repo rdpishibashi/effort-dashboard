@@ -44,12 +44,39 @@ def extract_year_month_from_date(date_str):
         return None, None
 
 
-def process_monthly_data(monthly_file_input, sheet_name='日報データ'):
+def process_monthly_data(monthly_file_input, sheet_name=None):
     """
     月次工数データファイルの日報データシートを処理してmerged_efforts形式に変換
     monthly_file_input: ファイルパス（文字列）またはBytesIOオブジェクト
+    sheet_name: シート名（Noneの場合は自動検出）
     """
     try:
+        # シート名の自動検出
+        if sheet_name is None:
+            import openpyxl
+            if hasattr(monthly_file_input, 'read'):
+                # BytesIOの場合
+                monthly_file_input.seek(0)
+                wb = openpyxl.load_workbook(monthly_file_input, read_only=True)
+                available_sheets = wb.sheetnames
+                wb.close()
+                monthly_file_input.seek(0)
+            else:
+                # ファイルパスの場合
+                wb = openpyxl.load_workbook(monthly_file_input, read_only=True)
+                available_sheets = wb.sheetnames
+                wb.close()
+
+            # シート名決定ロジック
+            if len(available_sheets) > 1:
+                # 複数シートの場合は '日報データ' を使用
+                sheet_name = '日報データ'
+            else:
+                # 単一シートの場合はそのシートを使用
+                sheet_name = available_sheets[0]
+
+            print(f"シート名を自動検出: '{sheet_name}' (利用可能なシート: {available_sheets})")
+
         # ファイル入力の種類を判定して適切に読み込み
         if hasattr(monthly_file_input, 'read'):
             # BytesIOオブジェクトの場合
