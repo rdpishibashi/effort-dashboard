@@ -14,9 +14,53 @@ from utils.data_merger import process_multiple_monthly_files
 from utils.visualization import (
     filter_data_by_period,
     get_available_business_content_columns,
-    sort_with_config,
-    create_chart_data_table
+    sort_with_config
 )
+
+try:
+    from utils.visualization import create_chart_data_table
+except ImportError:
+    def create_chart_data_table(df, x_field, group_field, x_axis_label, grouping_label):
+        """
+        Fallback implementation for Streamlit Cloud deployments that still use
+        an older utils.visualization module without create_chart_data_table.
+        """
+        if x_field == group_field:
+            agg_data = (
+                df.groupby([x_field])['作業時間(h)']
+                .sum()
+                .reset_index()
+            )
+
+            if x_field == '年月':
+                x_values = sorted(agg_data[x_field].unique().tolist())
+            else:
+                x_values = sort_with_config(agg_data[x_field].dropna().unique().tolist(), x_field)
+
+            agg_data[x_field] = pd.Categorical(agg_data[x_field], categories=x_values, ordered=True)
+            agg_data = agg_data.sort_values(x_field).set_index(x_field)
+            agg_data.index.name = x_axis_label
+            agg_data.columns = ['作業時間[h]']
+            return agg_data.map(lambda x: f"{x:.1f}")
+
+        agg_data = (
+            df.groupby([x_field, group_field])['作業時間(h)']
+            .sum()
+            .reset_index()
+        )
+
+        if x_field == '年月':
+            x_values = sorted(agg_data[x_field].unique().tolist())
+        else:
+            x_values = sort_with_config(agg_data[x_field].dropna().unique().tolist(), x_field)
+
+        group_values = sort_with_config(agg_data[group_field].dropna().unique().tolist(), group_field)
+        pivot_df = agg_data.pivot(index=x_field, columns=group_field, values='作業時間(h)')
+        pivot_df = pivot_df.reindex(index=x_values, columns=group_values).fillna(0.0)
+        pivot_df = pivot_df.map(lambda x: f"{x:.1f}")
+        pivot_df.index.name = x_axis_label
+        pivot_df.columns.name = '作業時間[h]'
+        return pivot_df
 
 st.set_page_config(
     page_title="工数ダッシュボード",
