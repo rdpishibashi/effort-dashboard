@@ -62,6 +62,40 @@ except ImportError:
         pivot_df.columns.name = '作業時間[h]'
         return pivot_df
 
+
+def render_sidebar_overview(placeholder):
+    """Render application instructions in the sidebar."""
+    placeholder.empty()
+    with placeholder.container():
+        with st.expander("ℹ️ 使い方ガイド", expanded=True):
+            st.markdown(
+                "**＜データ登録＞**\n"
+                "工数データを登録（アップロード）します。２つの登録方法があります。\n"
+                "\n"
+                "- 既存ファイルをアップロード：月次工数データを１つにまとめた総工数ファイルを登録する\n"
+                "- 月次データを統合：新たな月次工数データを追加して総工数ファイルを更新し登録する\n"
+            )
+            st.markdown(
+                "**＜工数分析グラフ＞**\n"
+                "総工数ファイルのデータを使って様々な分析グラフを作成します。グラフ作成の条件設定には以下のものがあります。\n"
+                "\n"
+                "- フィルター設定（左側のウィンドウ）：分析対象データを絞り込む。「期間」「大分類」「中分類」「個人」「UNIT」での絞り込みが可能。\n"
+                "- X軸：X軸に採用するデータ種別を選択する\n"
+                "- グルーピング方法：グラフの凡例（系列）を選択する\n"
+            )
+
+
+def render_data_status():
+    """Show the current dataset status underneath the filter controls."""
+    merged_df = st.session_state.get('merged_data')
+    st.sidebar.subheader("データの状態")
+    if merged_df is not None:
+        st.sidebar.metric("総データ件数", f"{len(merged_df):,}")
+        st.sidebar.metric("総作業時間", f"{merged_df['作業時間(h)'].sum():.1f} h")
+        st.sidebar.caption("現在登録されている総工数ファイルの概要です。")
+    else:
+        st.sidebar.info("総工数ファイルがまだ登録されていません。")
+
 st.set_page_config(
     page_title="工数ダッシュボード",
     page_icon="📊",
@@ -75,9 +109,6 @@ st.write("月次工数データを統合して多角的な工数分析を行い�
 # セッション状態の初期化
 if 'merged_data' not in st.session_state:
     st.session_state.merged_data = None
-
-if 'active_tab' not in st.session_state:
-    st.session_state.active_tab = 0
 
 # デフォルトファイルの自動読み込み（初回のみ）
 if 'default_loaded' not in st.session_state:
@@ -98,25 +129,14 @@ if not st.session_state.default_loaded and st.session_state.merged_data is None:
         st.session_state.default_loaded = True
 
 
-# ========================================
-# タブレイアウト（セッション状態で管理）
-# ========================================
-# タブ選択UI
-tab_options = ["データ登録", "工数分析グラフ"]
-selected_tab = st.radio(
-    "表示切替",
-    tab_options,
-    index=st.session_state.active_tab,
-    horizontal=True,
-    key="tab_selector"
-)
-
-# Update session state based on selection
-st.session_state.active_tab = tab_options.index(selected_tab)
+sidebar_overview_placeholder = st.sidebar.empty()
+render_sidebar_overview(sidebar_overview_placeholder)
 
 st.divider()
 
-if selected_tab == "データ登録":
+tab_data_entry, tab_analysis = st.tabs(["データ登録", "工数分析グラフ"])
+
+with tab_data_entry:
     st.header("データ登録")
 
     # 操作モード選択（タブ内）
@@ -256,8 +276,10 @@ if selected_tab == "データ登録":
         else:
             st.info("月次工数データファイルを選択してください")
 
+render_sidebar_overview(sidebar_overview_placeholder)
 
-elif selected_tab == "工数分析グラフ":
+
+with tab_analysis:
     # ========================================
     # 工数データの分析機能
     # ========================================
@@ -283,6 +305,7 @@ elif selected_tab == "工数分析グラフ":
         # ========================================
         # サイドバー: グローバルフィルター
         # ========================================
+        st.sidebar.markdown("---")
         st.sidebar.header("🔍 フィルター設定")
 
         # 期間フィルター（スライダー形式）
@@ -374,6 +397,7 @@ elif selected_tab == "工数分析グラフ":
             df_filtered = df_filtered[df_filtered['UNIT'] == global_unit_value]
 
         st.sidebar.info(f"フィルター後: {len(df_filtered):,}件 / {len(df):,}件")
+        render_data_status()
 
         # ========================================
         # 統合チャート表示
@@ -468,11 +492,3 @@ elif selected_tab == "工数分析グラフ":
                 st.dataframe(data_table, width='stretch')
         else:
             st.warning("フィルター条件に一致するデータがありません")
-
-        # ========================================
-        # サイドバー: 情報表示
-        # ========================================
-        with st.sidebar:
-            st.markdown("---")
-            st.metric("総データ件数", f"{len(st.session_state.merged_data):,}")
-            st.metric("総作業時間", f"{st.session_state.merged_data['作業時間(h)'].sum():.1f} h")
