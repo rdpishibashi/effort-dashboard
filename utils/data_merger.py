@@ -102,7 +102,8 @@ def process_monthly_data(monthly_file_input, sheet_name=None):
             '第3分類': '第3分類',
             'UNIT': 'UNIT',
             'MODULE': 'MODULE',
-            '業務内容': '業務内容'
+            '業務内容': '業務内容',
+            'WBS要素(代入)': 'WBS要素(代入)'
         }
 
         # 新しいデータフレームを作成
@@ -138,7 +139,7 @@ def process_monthly_data(monthly_file_input, sheet_name=None):
         expected_columns = [
             '年', '月', '従業員名', '作業時間(h)',
             'USER_FIELD_01', 'USER_FIELD_02', 'USER_FIELD_03', 'USER_FIELD_04', 'USER_FIELD_05',
-            '第1分類', '第2分類', '第3分類', 'UNIT', 'MODULE', '業務内容'
+            '第1分類', '第2分類', '第3分類', 'UNIT', 'MODULE', '業務内容', 'WBS要素(代入)'
         ]
 
         # 不足しているカラムを空文字で追加
@@ -436,7 +437,7 @@ def split_business_content(df):
     base_columns = [
         '年', '月', '従業員名', '作業時間(h)',
         'USER_FIELD_01', 'USER_FIELD_02', 'USER_FIELD_03', 'USER_FIELD_04', 'USER_FIELD_05',
-        '第1分類', '第2分類', '第3分類', 'UNIT', 'MODULE', '業務内容'
+        '第1分類', '第2分類', '第3分類', 'UNIT', 'MODULE', '業務内容', 'WBS要素(代入)'
     ]
 
     # 業務内容カラムを追加

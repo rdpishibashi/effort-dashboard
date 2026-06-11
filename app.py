@@ -5,65 +5,47 @@ Effort-Dashboard - 工数データマージ・分析ツール
 複数の月次工数データをマージし、様々な視点から分析・可視化する
 """
 
-import streamlit as st
-import pandas as pd
 import io
 import os
+import traceback
 from datetime import datetime
+
+import pandas as pd
+import streamlit as st
+
 from utils.data_merger import process_multiple_monthly_files
 from utils.visualization import (
+    create_chart_data_table,
+    create_unified_chart,
     filter_data_by_period,
     get_available_business_content_columns,
-    sort_with_config
+    sort_with_config,
 )
 
-try:
-    from utils.visualization import create_chart_data_table
-except ImportError:
-    def create_chart_data_table(df, x_field, group_field, x_axis_label, grouping_label):
-        """
-        Fallback implementation for Streamlit Cloud deployments that still use
-        an older utils.visualization module without create_chart_data_table.
-        """
-        if x_field == group_field:
-            agg_data = (
-                df.groupby([x_field])['作業時間(h)']
-                .sum()
-                .reset_index()
-            )
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
 
-            if x_field == '年月':
-                x_values = sorted(agg_data[x_field].unique().tolist())
-            else:
-                x_values = sort_with_config(agg_data[x_field].dropna().unique().tolist(), x_field)
+# Maps UI display names to DataFrame column names
+FIELD_MAPPING: dict[str, str] = {
+    '年月':      '年月',
+    '作業大分類': 'USER_FIELD_01',
+    '作業中分類': 'USER_FIELD_02',
+    '作業小分類': 'USER_FIELD_03',
+    '個人':      '従業員名',
+    'WBS要素':   'WBS要素(代入)',
+}
 
-            agg_data[x_field] = pd.Categorical(agg_data[x_field], categories=x_values, ordered=True)
-            agg_data = agg_data.sort_values(x_field).set_index(x_field)
-            agg_data.index.name = x_axis_label
-            agg_data.columns = ['作業時間[h]']
-            return agg_data.map(lambda x: f"{x:.1f}")
+USER_FIELDS = [
+    'USER_FIELD_01', 'USER_FIELD_02', 'USER_FIELD_03',
+    'USER_FIELD_04', 'USER_FIELD_05',
+]
 
-        agg_data = (
-            df.groupby([x_field, group_field])['作業時間(h)']
-            .sum()
-            .reset_index()
-        )
+# ---------------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------------
 
-        if x_field == '年月':
-            x_values = sorted(agg_data[x_field].unique().tolist())
-        else:
-            x_values = sort_with_config(agg_data[x_field].dropna().unique().tolist(), x_field)
-
-        group_values = sort_with_config(agg_data[group_field].dropna().unique().tolist(), group_field)
-        pivot_df = agg_data.pivot(index=x_field, columns=group_field, values='作業時間(h)')
-        pivot_df = pivot_df.reindex(index=x_values, columns=group_values).fillna(0.0)
-        pivot_df = pivot_df.map(lambda x: f"{x:.1f}")
-        pivot_df.index.name = x_axis_label
-        pivot_df.columns.name = '作業時間[h]'
-        return pivot_df
-
-
-def render_sidebar_overview(placeholder):
+def render_sidebar_overview(placeholder) -> None:
     """Render application instructions in the sidebar."""
     placeholder.empty()
     with placeholder.container():
@@ -77,16 +59,16 @@ def render_sidebar_overview(placeholder):
             )
             st.markdown(
                 "**＜工数分析グラフ＞**\n"
-                "総工数ファイルのデータを使って様々な分析グラフを作成します。グラフ作成の条件設定には以下のものがあります。\n"
+                "総工数ファイルのデータを使って様々な分析グラフを作成します。\n"
                 "\n"
-                "- フィルター設定（左側のウィンドウ）：分析対象データを絞り込む。「期間」「大分類」「中分類」「個人」「UNIT」での絞り込みが可能。\n"
+                "- フィルター設定（左側のウィンドウ）：分析対象データを絞り込む\n"
                 "- X軸：X軸に採用するデータ種別を選択する\n"
                 "- グルーピング方法：グラフの凡例（系列）を選択する\n"
             )
 
 
-def render_data_status():
-    """Show the current dataset status underneath the filter controls."""
+def render_data_status() -> None:
+    """Show the current dataset status in the sidebar."""
     merged_df = st.session_state.get('merged_data')
     st.sidebar.subheader("データの状態")
     if merged_df is not None:
@@ -96,38 +78,82 @@ def render_data_status():
     else:
         st.sidebar.info("総工数ファイルがまだ登録されていません。")
 
+
+def preprocess_df(raw_df: pd.DataFrame) -> pd.DataFrame:
+    """Coerce types, drop invalid rows, and fill USER_FIELD NaNs with '未入力'."""
+    df = raw_df.copy()
+    df['年'] = pd.to_numeric(df['年'], errors='coerce').astype('Int64')
+    df['月'] = pd.to_numeric(df['月'], errors='coerce').astype('Int64')
+    df['作業時間(h)'] = pd.to_numeric(df['作業時間(h)'], errors='coerce')
+    df = df[(df['年'].notna()) & (df['月'].notna()) & (df['作業時間(h)'] > 0)]
+    for field in USER_FIELDS:
+        if field in df.columns:
+            df[field] = df[field].fillna('未入力')
+    return df
+
+
+def make_stats_pivot(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a 年月 × USER_FIELD_01 pivot table of work hours."""
+    tmp = df.copy()
+    tmp['USER_FIELD_01'] = tmp['USER_FIELD_01'].fillna('未入力')
+    tmp['作業時間(h)'] = pd.to_numeric(tmp['作業時間(h)'], errors='coerce').fillna(0)
+    tmp = tmp[tmp['作業時間(h)'] > 0]
+    tmp['年月'] = tmp['年'].astype(str) + '-' + tmp['月'].astype(str).str.zfill(2)
+    pivot = (
+        tmp.groupby(['年月', 'USER_FIELD_01'])['作業時間(h)']
+        .sum()
+        .reset_index()
+        .pivot(index='年月', columns='USER_FIELD_01', values='作業時間(h)')
+        .fillna(0)
+    )
+    col_order = sort_with_config(pivot.columns.tolist(), 'USER_FIELD_01')
+    pivot = pivot[col_order].map(lambda x: f"{x:.1f}")
+    pivot.columns.name = '作業時間[h]'
+    pivot.index.name = '年月'
+    return pivot
+
+
+# ---------------------------------------------------------------------------
+# Page config
+# ---------------------------------------------------------------------------
+
 st.set_page_config(
     page_title="工数ダッシュボード",
     page_icon="📊",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
 st.title("工数分析ダッシュボード")
 st.write("月次工数データを統合して多角的な工数分析を行います")
 
-# セッション状態の初期化
+# ---------------------------------------------------------------------------
+# Session state initialization
+# ---------------------------------------------------------------------------
+
 if 'merged_data' not in st.session_state:
     st.session_state.merged_data = None
+if 'merged_excel_bytes' not in st.session_state:
+    st.session_state.merged_excel_bytes = None
+if 'merged_excel_filename' not in st.session_state:
+    st.session_state.merged_excel_filename = None
+if 'grouping' not in st.session_state:
+    st.session_state['grouping'] = '作業大分類'
 
-# デフォルトファイルの自動読み込み（初回のみ）
+# Auto-load default file (first run only)
 if 'default_loaded' not in st.session_state:
     st.session_state.default_loaded = False
 
 if not st.session_state.default_loaded and st.session_state.merged_data is None:
-    default_file_path = os.path.join(os.path.dirname(__file__), 'merged_efforts.xlsx')
-    if os.path.exists(default_file_path):
+    _default_path = os.path.join(os.path.dirname(__file__), 'merged_efforts.xlsx')
+    if os.path.exists(_default_path):
         try:
-            default_df = pd.read_excel(default_file_path)
-            st.session_state.merged_data = default_df
-            st.session_state.default_loaded = True
-            st.info(f"デフォルトファイル 'merged_efforts.xlsx' を読み込みました ({len(default_df):,}行)")
-        except Exception as e:
-            st.warning(f"デフォルトファイルの読み込みに失敗しました: {e}")
-            st.session_state.default_loaded = True
-    else:
-        st.session_state.default_loaded = True
-
+            _default_df = pd.read_excel(_default_path)
+            st.session_state.merged_data = _default_df
+            st.toast(f"✅ merged_efforts.xlsx を読み込みました ({len(_default_df):,}行)")
+        except Exception as _e:
+            st.warning(f"デフォルトファイルの読み込みに失敗しました: {_e}")
+    st.session_state.default_loaded = True
 
 sidebar_overview_placeholder = st.sidebar.empty()
 render_sidebar_overview(sidebar_overview_placeholder)
@@ -136,42 +162,42 @@ st.divider()
 
 tab_data_entry, tab_analysis = st.tabs(["データ登録", "工数分析グラフ"])
 
+# ---------------------------------------------------------------------------
+# Tab: データ登録
+# ---------------------------------------------------------------------------
+
 with tab_data_entry:
     st.header("データ登録")
 
-    # 操作モード選択（タブ内）
     upload_mode = st.radio(
         "登録方法を選択してください",
         ['総工数ファイルをアップロード', '月次データを統合'],
-        index=0,
         horizontal=True,
-        key='upload_mode_selector'
+        key='upload_mode_selector',
     )
 
     if upload_mode == '総工数ファイルをアップロード':
-        # ========================================
-        # モード1: 総工数ファイル分析
-        # ========================================
         st.subheader("既存の総工数データファイルをアップロード")
-
         analysis_file = st.file_uploader(
             "総工数データファイルをアップロード",
             type=['xlsx'],
-            key="analysis_upload"
+            key="analysis_upload",
         )
-
         if analysis_file:
             try:
                 analysis_df = pd.read_excel(analysis_file)
+                # YubiNippo形式（作業日あり・年月なし）の場合は自動変換
+                if '年' not in analysis_df.columns and '作業日' in analysis_df.columns:
+                    analysis_df['作業日'] = pd.to_datetime(analysis_df['作業日'], errors='coerce')
+                    analysis_df['年'] = analysis_df['作業日'].dt.year
+                    analysis_df['月'] = analysis_df['作業日'].dt.month
+                    st.info("'作業日' 列から '年'・'月' 列を自動生成しました。")
                 st.session_state.merged_data = analysis_df
                 st.success(f"✅ ファイル読み込み完了: {len(analysis_df):,}行")
             except Exception as e:
                 st.error(f"ファイル読み込みエラー: {e}")
 
-    else:
-        # ========================================
-        # モード2: 月次データ統合
-        # ========================================
+    else:  # 月次データを統合
         st.subheader("月次工数データの統合")
 
         with st.expander("📁 ファイルアップロード", expanded=True):
@@ -182,18 +208,15 @@ with tab_data_entry:
                 existing_file = st.file_uploader(
                     "総工数データファイルをアップロード（新規作成時は不要）",
                     type=['xlsx'],
-                    key="existing"
+                    key="existing",
                 )
-
                 if existing_file:
                     st.success(f"✅ {existing_file.name}")
                     try:
                         existing_df = pd.read_excel(existing_file)
                         st.write(f"行数: {len(existing_df):,}")
-
-                        # 年月範囲表示
-                        year_month_stats = existing_df.groupby(['年', '月']).size().reset_index(name='件数')
-                        st.dataframe(year_month_stats, height=200)
+                        ym_stats = existing_df.groupby(['年', '月']).size().reset_index(name='件数')
+                        st.dataframe(ym_stats, height=200)
                     except Exception as e:
                         st.error(f"ファイル読み込みエラー: {e}")
 
@@ -203,271 +226,182 @@ with tab_data_entry:
                     "月次工数データファイルをアップロード（複数選択可）",
                     type=['xlsx'],
                     accept_multiple_files=True,
-                    key="monthly"
+                    key="monthly",
                 )
-
                 if monthly_files:
                     st.success(f"✅ {len(monthly_files)}ファイル選択済み")
-                    for i, file in enumerate(monthly_files, 1):
-                        st.write(f"{i}. {file.name}")
+                    for i, f in enumerate(monthly_files, 1):
+                        st.write(f"{i}. {f.name}")
 
-        # マージ処理実行
         st.divider()
 
         if monthly_files:
-            if st.button("🔄 データマージ・業務内容分割を実行", type="primary"):
+            if st.button("データマージ・業務内容分割を実行", type="primary"):
                 try:
                     progress_bar = st.progress(0.0)
                     status_text = st.empty()
 
                     def update_progress(progress, status):
-                        progress = float(max(0.0, min(1.0, progress)))
-                        progress_bar.progress(progress)
+                        progress_bar.progress(float(max(0.0, min(1.0, progress))))
                         status_text.text(status)
 
-                    # ファイルポインタをリセット
                     if existing_file:
                         existing_file.seek(0)
-                    for file in monthly_files:
-                        file.seek(0)
+                    for f in monthly_files:
+                        f.seek(0)
 
-                    # マージ処理実行
                     final_data = process_multiple_monthly_files(
-                        monthly_files,
-                        existing_file,
-                        progress_callback=update_progress
+                        monthly_files, existing_file, progress_callback=update_progress
                     )
 
                     if final_data is not None:
                         st.session_state.merged_data = final_data
 
-                        st.success("✅ マージ・業務内容分割が完了しました！")
-
-                        # 統計情報
-                        st.subheader("📊 統計情報")
-                        stats = final_data.groupby(['年', '月']).agg({
-                            '従業員名': 'nunique',
-                            '作業時間(h)': 'sum'
-                        }).reset_index()
-                        stats.columns = ['年', '月', 'ユニーク従業員数', '総作業時間(h)']
-                        st.dataframe(stats)
-
-                        # ダウンロードボタン
-                        output_buffer = io.BytesIO()
-                        final_data.to_excel(output_buffer, index=False, engine='xlsxwriter')
-                        output_buffer.seek(0)
-
-                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        filename = f"merged_efforts_{timestamp}.xlsx"
-
-                        st.download_button(
-                            label="📥 総工数データファイルをダウンロード",
-                            data=output_buffer,
-                            file_name=filename,
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        buf = io.BytesIO()
+                        final_data.to_excel(buf, index=False, engine='xlsxwriter')
+                        buf.seek(0)
+                        st.session_state.merged_excel_bytes = buf.getvalue()
+                        st.session_state.merged_excel_filename = (
+                            f"merged_efforts_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
                         )
+
+                        st.success("✅ マージ・業務内容分割が完了しました！")
+                        st.subheader("📊 統計情報")
+                        st.dataframe(make_stats_pivot(final_data), width='stretch')
                     else:
                         st.error("❌ 処理に失敗しました")
 
                 except Exception as e:
                     st.error(f"処理エラー: {e}")
-                    import traceback
                     st.text(traceback.format_exc())
         else:
             st.info("月次工数データファイルを選択してください")
 
-render_sidebar_overview(sidebar_overview_placeholder)
+        if st.session_state.merged_excel_bytes is not None:
+            st.divider()
+            st.subheader("ファイル保存")
+            st.download_button(
+                label="総工数データファイルをダウンロード",
+                data=st.session_state.merged_excel_bytes,
+                file_name=st.session_state.merged_excel_filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+                width='stretch',
+            )
+            st.caption(
+                "ダウンロードしたファイルを merged_efforts.xlsx にリネームしてアプリフォルダに置くと、"
+                "次回起動時に自動読み込みされます。"
+            )
 
+# ---------------------------------------------------------------------------
+# Tab: 工数分析グラフ
+# ---------------------------------------------------------------------------
 
 with tab_analysis:
-    # ========================================
-    # 工数データの分析機能
-    # ========================================
     if st.session_state.merged_data is None:
-        st.info("データを登録してください。「データ登録」タブで総工数ファイルをアップロードするか、月次データを統合してください。")
+        st.info(
+            "データを登録してください。「データ登録」タブで総工数ファイルをアップロードするか、"
+            "月次データを統合してください。"
+        )
     else:
         st.header("工数データの分析")
 
-        df = st.session_state.merged_data
+        df = preprocess_df(st.session_state.merged_data)
 
-        # データの前処理
-        df['年'] = pd.to_numeric(df['年'], errors='coerce').astype('Int64')
-        df['月'] = pd.to_numeric(df['月'], errors='coerce').astype('Int64')
-        df['作業時間(h)'] = pd.to_numeric(df['作業時間(h)'], errors='coerce')
-
-        # 無効データ除外
-        df = df[
-            (df['年'].notna()) &
-            (df['月'].notna()) &
-            (df['作業時間(h)'] > 0)
-        ]
-
-        # ========================================
-        # サイドバー: グローバルフィルター
-        # ========================================
+        # --- Sidebar: global filters ----------------------------------------
         st.sidebar.markdown("---")
         st.sidebar.header("🔍 フィルター設定")
 
-        # 期間フィルター（スライダー形式）
         available_year_months = sorted(df[['年', '月']].drop_duplicates().values.tolist())
         if available_year_months:
-            year_month_labels = [f"{int(y)}-{int(m):02d}" for y, m in available_year_months]
-            year_month_datetimes = pd.to_datetime(year_month_labels, format='%Y-%m')
-    
-            default_end_idx = len(year_month_datetimes) - 1
-            default_start_idx = max(0, default_end_idx - 5)  # Last 6 months
-    
+            ym_labels = [f"{int(y)}-{int(m):02d}" for y, m in available_year_months]
+            ym_dts = pd.to_datetime(ym_labels, format='%Y-%m')
+            default_end_idx = len(ym_dts) - 1
+            default_start_idx = max(0, default_end_idx - 5)
+
             start_dt, end_dt = st.sidebar.slider(
                 "期間",
-                min_value=year_month_datetimes[0].to_pydatetime(),
-                max_value=year_month_datetimes[-1].to_pydatetime(),
+                min_value=ym_dts[0].to_pydatetime(),
+                max_value=ym_dts[-1].to_pydatetime(),
                 value=(
-                    year_month_datetimes[default_start_idx].to_pydatetime(),
-                    year_month_datetimes[default_end_idx].to_pydatetime()
+                    ym_dts[default_start_idx].to_pydatetime(),
+                    ym_dts[default_end_idx].to_pydatetime(),
                 ),
                 format="YYYY-MM",
-                key="period_slider"
+                key="period_slider",
             )
-    
             start_year, start_month = start_dt.year, start_dt.month
             end_year, end_month = end_dt.year, end_dt.month
-    
             df_filtered = filter_data_by_period(
-                df,
-                (start_year, start_month),
-                (end_year, end_month)
+                df, (start_year, start_month), (end_year, end_month)
             )
+            period_label = f"{start_year}-{start_month:02d} 〜 {end_year}-{end_month:02d}"
         else:
             df_filtered = df
+            period_label = None
             st.sidebar.warning("データに年月情報がありません")
 
-        # グローバル 作業大分類フィルター
-        global_field1_options = ['すべて'] + sort_with_config(
-            df_filtered['USER_FIELD_01'].dropna().unique().tolist(),
-            'USER_FIELD_01'
+        # Cascading classification filters
+        field1_opts = ['すべて'] + sort_with_config(
+            df_filtered['USER_FIELD_01'].dropna().unique().tolist(), 'USER_FIELD_01'
         )
-        global_field1_value = st.sidebar.selectbox(
-            "作業大分類",
-            global_field1_options,
-            key="global_field1"
-        )
+        global_field1 = st.sidebar.selectbox("作業大分類", field1_opts, key="global_field1")
 
-        # グローバル 作業中分類フィルター（cascading）
-        if global_field1_value != 'すべて':
-            global_field2_options_filtered = df_filtered[
-                df_filtered['USER_FIELD_01'] == global_field1_value
-            ]['USER_FIELD_02'].dropna().unique().tolist()
-        else:
-            global_field2_options_filtered = df_filtered['USER_FIELD_02'].dropna().unique().tolist()
-
-        global_field2_options = ['すべて'] + sort_with_config(
-            global_field2_options_filtered,
-            'USER_FIELD_02'
+        field2_base = (
+            df_filtered[df_filtered['USER_FIELD_01'] == global_field1]
+            if global_field1 != 'すべて' else df_filtered
         )
-        global_field2_value = st.sidebar.selectbox(
-            "作業中分類",
-            global_field2_options,
-            key="global_field2"
+        field2_opts = ['すべて'] + sort_with_config(
+            field2_base['USER_FIELD_02'].dropna().unique().tolist(), 'USER_FIELD_02'
         )
+        global_field2 = st.sidebar.selectbox("作業中分類", field2_opts, key="global_field2")
 
-        # グローバル 個人フィルター
-        global_person_options = ['すべて'] + sorted(df_filtered['従業員名'].dropna().unique().tolist())
-        global_person_value = st.sidebar.selectbox(
-            "個人",
-            global_person_options,
-            key="global_person"
-        )
+        person_opts = ['すべて'] + sorted(df_filtered['従業員名'].dropna().unique().tolist())
+        global_person = st.sidebar.selectbox("個人", person_opts, key="global_person")
 
-        # グローバル UNITフィルター
-        global_unit_options = ['すべて'] + sorted(df_filtered['UNIT'].dropna().unique().tolist())
-        global_unit_value = st.sidebar.selectbox(
-            "UNIT",
-            global_unit_options,
-            key="global_unit"
-        )
+        unit_opts = ['すべて'] + sorted(df_filtered['UNIT'].dropna().unique().tolist())
+        global_unit = st.sidebar.selectbox("UNIT", unit_opts, key="global_unit")
 
-        # グローバルフィルター適用
-        if global_field1_value != 'すべて':
-            df_filtered = df_filtered[df_filtered['USER_FIELD_01'] == global_field1_value]
-        if global_field2_value != 'すべて':
-            df_filtered = df_filtered[df_filtered['USER_FIELD_02'] == global_field2_value]
-        if global_person_value != 'すべて':
-            df_filtered = df_filtered[df_filtered['従業員名'] == global_person_value]
-        if global_unit_value != 'すべて':
-            df_filtered = df_filtered[df_filtered['UNIT'] == global_unit_value]
+        # Apply filters
+        if global_field1 != 'すべて':
+            df_filtered = df_filtered[df_filtered['USER_FIELD_01'] == global_field1]
+        if global_field2 != 'すべて':
+            df_filtered = df_filtered[df_filtered['USER_FIELD_02'] == global_field2]
+        if global_person != 'すべて':
+            df_filtered = df_filtered[df_filtered['従業員名'] == global_person]
+        if global_unit != 'すべて':
+            df_filtered = df_filtered[df_filtered['UNIT'] == global_unit]
 
         st.sidebar.info(f"フィルター後: {len(df_filtered):,}件 / {len(df):,}件")
         render_data_status()
 
-        # ========================================
-        # 統合チャート表示
-        # ========================================
-#        st.subheader("工数分析グラフ")
-
-        # 業務内容カラムの検出
+        # --- Chart controls -------------------------------------------------
         available_business_cols = get_available_business_content_columns(df_filtered)
+        wbs_option = ['WBS要素'] if 'WBS要素(代入)' in df_filtered.columns else []
+        axis_choices = (
+            ['年月', '作業大分類', '作業中分類', '作業小分類', '個人']
+            + wbs_option
+            + available_business_cols
+        )
 
-        # X軸とグルーピング方法の選択
         col1, col2 = st.columns(2)
-
         with col1:
-            # X軸選択（年月を含む）
-            x_axis_options = (
-                ['年月', '作業大分類', '作業中分類', '作業小分類', '個人', 'UNIT'] +
-                available_business_cols
-            )
-            x_axis = st.selectbox(
-                "X軸",
-                x_axis_options,
-                key="x_axis"
-            )
-
+            x_axis = st.selectbox("X軸", axis_choices, key="x_axis")
         with col2:
-            # グルーピング方法選択（年月を除く）
-            grouping_options = (
-                ['作業大分類', '作業中分類', '作業小分類', '個人', 'UNIT'] +
-                available_business_cols
-            )
-            grouping = st.selectbox(
-                "グルーピング方法",
-                grouping_options,
-                key="grouping"
-            )
+            grouping = st.selectbox("グルーピング方法", axis_choices, key="grouping")
 
-        # 期間ラベル作成
-        if available_year_months:
-            period_label = f"{start_year}-{start_month:02d} 〜 {end_year}-{end_month:02d}"
-        else:
-            period_label = None
-
-        # チャート作成
         if len(df_filtered) > 0:
-            # フィールド名のマッピング
-            field_mapping = {
-                '年月': '年月',
-                '作業大分類': 'USER_FIELD_01',
-                '作業中分類': 'USER_FIELD_02',
-                '作業小分類': 'USER_FIELD_03',
-                '個人': '従業員名',
-                'UNIT': 'UNIT'
-            }
+            x_field = FIELD_MAPPING.get(x_axis, x_axis)
+            group_field = FIELD_MAPPING.get(grouping, grouping)
 
-            # X軸とグルーピングのフィールド名を取得
-            x_field = field_mapping.get(x_axis, x_axis)  # 業務内容はそのまま
-            group_field = field_mapping.get(grouping, grouping)
-
-            # 年月列を作成（X軸が年月の場合）
-            if x_field == '年月':
+            # Ensure 年月 column exists when used as axis or grouping
+            if '年月' in (x_field, group_field) and '年月' not in df_filtered.columns:
                 df_filtered = df_filtered.copy()
-                df_filtered['年月'] = df_filtered['年'].astype(str) + '-' + df_filtered['月'].astype(str).str.zfill(2)
-
-            # グルーピング列を作成（グルーピングが年月の可能性はないが念のため）
-            if group_field == '年月' and '年月' not in df_filtered.columns:
-                df_filtered = df_filtered.copy()
-                df_filtered['年月'] = df_filtered['年'].astype(str) + '-' + df_filtered['月'].astype(str).str.zfill(2)
-
-            # チャートタイプの決定と作成
-            from utils.visualization import create_unified_chart
+                df_filtered['年月'] = (
+                    df_filtered['年'].astype(str)
+                    + '-'
+                    + df_filtered['月'].astype(str).str.zfill(2)
+                )
 
             fig = create_unified_chart(
                 df_filtered,
@@ -475,20 +409,14 @@ with tab_analysis:
                 group_field=group_field,
                 x_axis_label=x_axis,
                 grouping_label=grouping,
-                range_label=period_label
+                range_label=period_label,
             )
+            st.plotly_chart(fig, width='stretch', config=None)
 
-            st.plotly_chart(fig, use_container_width=True, config=None)
-
-            # データテーブル（折りたたみ式）
             with st.expander("データテーブル：作業時間[h]", expanded=False):
-                data_table = create_chart_data_table(
-                    df_filtered,
-                    x_field=x_field,
-                    group_field=group_field,
-                    x_axis_label=x_axis,
-                    grouping_label=grouping
+                st.dataframe(
+                    create_chart_data_table(df_filtered, x_field, group_field, x_axis, grouping),
+                    width='stretch',
                 )
-                st.dataframe(data_table, width='stretch')
         else:
             st.warning("フィルター条件に一致するデータがありません")
