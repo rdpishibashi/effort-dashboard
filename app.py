@@ -32,8 +32,9 @@ FIELD_MAPPING: dict[str, str] = {
     '作業大分類': 'USER_FIELD_01',
     '作業中分類': 'USER_FIELD_02',
     '作業小分類': 'USER_FIELD_03',
-    '個人':      '従業員名',
     '指番':      '指番',
+    '総合効率':   'USER_FIELD_05',
+    '個人':      '従業員名',
 }
 
 USER_FIELDS = [
@@ -386,8 +387,9 @@ with tab_analysis:
         available_business_cols = get_available_business_content_columns(df_filtered)
         sashiban_option = ['指番'] if '指番' in df_filtered.columns else []
         axis_choices = (
-            ['年月', '作業大分類', '作業中分類', '作業小分類', '個人']
+            ['年月', '作業大分類', '作業中分類', '作業小分類']
             + sashiban_option
+            + ['総合効率', '個人']
             + available_business_cols
         )
 
