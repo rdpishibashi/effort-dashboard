@@ -170,7 +170,7 @@ def process_monthly_data(monthly_file_input, sheet_name=None):
         return None
 
 
-# 重複行の判定に使うキー列（年・月・従業員名・所属部署名称・USER_FIELD_01〜05）
+# 重複行の判定に使うキー列（年・月・従業員名・UNIT・USER_FIELD_01〜05）
 DEDUP_KEY_COLUMNS = [
     '年', '月', '従業員名', 'UNIT',
     'USER_FIELD_01', 'USER_FIELD_02', 'USER_FIELD_03', 'USER_FIELD_04', 'USER_FIELD_05',
@@ -193,7 +193,7 @@ def merge_effort_data(existing_file_input, new_data_df):
     existing_file_input: ファイルパス（文字列）またはBytesIOオブジェクト
     new_data_df: 新しいデータのDataFrame
 
-    年・月・従業員名・UNIT（所属部署名称）・USER_FIELD_01〜05 の組み合わせが
+    年・月・従業員名・UNIT・USER_FIELD_01〜05 の組み合わせが
     既存データと重複する行は、新しいデータ（月次ファイル側）で上書きする。
 
     existing_file_inputがNoneの場合は、新規作成として扱う
