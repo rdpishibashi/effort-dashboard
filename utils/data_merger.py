@@ -46,7 +46,7 @@ def extract_year_month_from_date(date_str):
 
 def process_monthly_data(monthly_file_input, sheet_name=None):
     """
-    月次工数データファイルの日報データシートを処理してmerged_efforts形式に変換
+    月次工数データファイルのYubiNippoDBシートを処理してmerged_efforts形式に変換
     monthly_file_input: ファイルパス（文字列）またはBytesIOオブジェクト
     sheet_name: シート名（Noneの場合は自動検出）
     """
@@ -69,8 +69,8 @@ def process_monthly_data(monthly_file_input, sheet_name=None):
 
             # シート名決定ロジック
             if len(available_sheets) > 1:
-                # 複数シートの場合は '日報データ' を使用
-                sheet_name = '日報データ'
+                # 複数シートの場合は 'YubiNippoDB' を使用
+                sheet_name = 'YubiNippoDB'
             else:
                 # 単一シートの場合はそのシートを使用
                 sheet_name = available_sheets[0]
@@ -170,11 +170,31 @@ def process_monthly_data(monthly_file_input, sheet_name=None):
         return None
 
 
+# 重複行の判定に使うキー列（年・月・従業員名・所属部署名称・USER_FIELD_01〜05）
+DEDUP_KEY_COLUMNS = [
+    '年', '月', '従業員名', 'UNIT',
+    'USER_FIELD_01', 'USER_FIELD_02', 'USER_FIELD_03', 'USER_FIELD_04', 'USER_FIELD_05',
+]
+
+
+def _build_dedup_keys(df):
+    """DEDUP_KEY_COLUMNSの値を連結した行識別キーのSeriesを返す"""
+    key_df = pd.DataFrame(index=df.index)
+    key_df['年'] = pd.to_numeric(df['年'], errors='coerce').astype('Int64').astype(str)
+    key_df['月'] = pd.to_numeric(df['月'], errors='coerce').astype('Int64').astype(str)
+    for col in DEDUP_KEY_COLUMNS[2:]:
+        key_df[col] = df[col].fillna('').astype(str) if col in df.columns else ''
+    return key_df.astype(str).agg('|'.join, axis=1)
+
+
 def merge_effort_data(existing_file_input, new_data_df):
     """
     既存のmerged_effortsファイルに新しいデータを追加
     existing_file_input: ファイルパス（文字列）またはBytesIOオブジェクト
     new_data_df: 新しいデータのDataFrame
+
+    年・月・従業員名・UNIT（所属部署名称）・USER_FIELD_01〜05 の組み合わせが
+    既存データと重複する行は、新しいデータ（月次ファイル側）で上書きする。
 
     existing_file_inputがNoneの場合は、新規作成として扱う
     """
@@ -209,18 +229,14 @@ def merge_effort_data(existing_file_input, new_data_df):
 
             print(f"既存データクリーニング: {before_existing}行 → {after_existing}行 ({before_existing - after_existing}行除外)")
 
-            # 重複チェック（年月の組み合わせ）
-            new_year_months = set(zip(new_data_df['年'], new_data_df['月']))
-            existing_year_months_set = set(zip(existing_df['年'], existing_df['月']))
+            # 重複チェック（年・月・従業員名・UNIT・USER_FIELD_01〜05の組み合わせ）
+            new_keys = set(_build_dedup_keys(new_data_df))
+            existing_keys = _build_dedup_keys(existing_df)
 
-            overlapping = new_year_months.intersection(existing_year_months_set)
-            if overlapping:
-                print(f"警告: 重複する年月があります: {overlapping}")
-                # Streamlit実行時は重複データを上書き
-                for year, month in overlapping:
-                    mask = (existing_df['年'] == year) & (existing_df['月'] == month)
-                    existing_df = existing_df[~mask]
-                    print(f"既存データから {year}-{month} のデータを削除しました")
+            overlap_mask = existing_keys.isin(new_keys)
+            if overlap_mask.any():
+                print(f"警告: 重複する行があります: {overlap_mask.sum()}行 → 月次データで上書きします")
+                existing_df = existing_df[~overlap_mask]
 
             # データを結合
             merged_df = pd.concat([existing_df, new_data_df], ignore_index=True)

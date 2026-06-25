@@ -1,6 +1,6 @@
 # TECHNICAL.md — Effort-Dashboard
 
-最終更新: 2026-06-11
+最終更新: 2026-06-25
 
 ## 概要
 
@@ -65,7 +65,7 @@ merged_data (DataFrame)
 | `年` | 作業年（整数）|
 | `月` | 作業月（整数）|
 | `従業員名` | 作業者名 |
-| `UNIT` | 所属ユニット |
+| `UNIT` | 所属部署名称 |
 | `作業時間(h)` | 工数（時間）|
 | `USER_FIELD_01` | 作業大分類 |
 | `USER_FIELD_02` | 作業中分類 |
@@ -76,9 +76,19 @@ merged_data (DataFrame)
 | `業務内容1`〜`業務内容10` | 業務内容を分割した列 |
 | `WBS要素(代入)` | WBS 要素コード |
 
+**重複行のマージルール（月次データ統合時）:**
+`年`・`月`・`従業員名`・`UNIT`・`USER_FIELD_01〜05` の組み合わせが既存データと重複する行は、
+月次ファイル側のデータで上書きする（`merge_effort_data()` 内 `_build_dedup_keys()` が行識別キーを生成）。
+年月単位の一括削除ではなく、行単位の上書きである点に注意。
+
 **NaN の扱い:**
 - `USER_FIELD_01〜05` の NaN は前処理で `"未入力"` に置換 → グラフ集計に含まれる
 - `WBS要素(代入)` / `業務内容X` の NaN は置換しない → それらを軸に選んだ場合は除外される（設計上の仕様）
+
+**派生列「指番」（app.py の `preprocess_df()` で生成、merged_efforts.xlsx 自体には存在しない）:**
+- `WBS要素(代入)` が空白でない場合はその値を採用
+- `WBS要素(代入)` が空白で `UNIT` が空白でない場合は `UNIT` の値を採用
+- 両方空白の場合は NaN（`WBS要素(代入)` と同様、軸に選んだ場合は除外される）
 
 ---
 
@@ -95,7 +105,7 @@ merged_data (DataFrame)
 
 | 関数 | 説明 |
 |------|------|
-| `preprocess_df(raw_df)` | 型変換・無効行除去・USER_FIELD NaN→"未入力" |
+| `preprocess_df(raw_df)` | 型変換・無効行除去・USER_FIELD NaN→"未入力"・「指番」列の生成 |
 | `make_stats_pivot(df)` | 年月 × USER_FIELD_01 ピボットテーブルを返す |
 | `render_sidebar_overview(placeholder)` | サイドバーの使い方ガイドを描画 |
 | `render_data_status()` | サイドバーのデータ状態を描画 |
@@ -104,7 +114,7 @@ merged_data (DataFrame)
 
 ## `utils/data_merger.py`
 
-月次工数データ（日報データシート）を merged_efforts 形式に変換する。
+月次工数データ（YubiNippoDBシート）を merged_efforts 形式に変換する。
 
 主要関数:
 
@@ -112,11 +122,16 @@ merged_data (DataFrame)
 |------|------|
 | `process_monthly_data(file, sheet_name)` | 単一月次ファイルを処理、シート名は自動検出 |
 | `process_multiple_monthly_files(files)` | 複数月次ファイルを順次処理してマージ |
+| `merge_effort_data(existing_file, new_data_df)` | 既存データと新データを行単位の重複排除付きでマージ |
 | `extract_year_month_from_date(date_str)` | 複数日付フォーマット対応の年月抽出 |
 
 **シート名の自動検出ロジック:**
-- 複数シートあり → `'日報データ'` シートを使用
+- 複数シートあり → `'YubiNippoDB'` シートを使用
 - 単一シートのみ → そのシートを使用
+
+**重複行のマージルール（`merge_effort_data()`）:**
+`DEDUP_KEY_COLUMNS`（`年`・`月`・`従業員名`・`UNIT`・`USER_FIELD_01〜05`）の組み合わせをキーとして、
+既存データ側で新データと同じキーを持つ行を削除してから結合する（月次データで上書き）。
 
 **YubiNippo 直接エクスポート対応:**
 - `作業日` 列が存在し `年`/`月` 列がない場合、`作業日` から自動生成（`総工数ファイルをアップロード` モード）
@@ -164,7 +179,7 @@ Plotly グラフ生成とデータ前処理を担う。
 
 - 指定外の値はアルファベット順でリスト末尾に追加される
 - `sort_with_config()` が参照する
-- `UNIT` や `WBS要素(代入)` は未登録 → アルファベット順
+- `UNIT` や `WBS要素(代入)` / `指番` は未登録 → アルファベット順
 
 ---
 
@@ -198,7 +213,7 @@ plotly>=5.18.0
 |------|------|
 | データの永続化なし | `merged_data` はセッション内のみ保持。ブラウザリロードで消える |
 | `merged_efforts.xlsx` のローカル配置 | クラウドデプロイ時は毎回アップロードが必要 |
-| 月次ファイルのフォーマット依存 | `'日報データ'` シート名と列名が固定されている |
+| 月次ファイルのフォーマット依存 | `'YubiNippoDB'` シート名と列名が固定されている |
 | 大量データ | 数万行超では Plotly の描画が遅くなる |
 
 ---
