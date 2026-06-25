@@ -370,11 +370,11 @@ with tab_analysis:
         )
         global_person = st.sidebar.multiselect("個人", person_opts, key="global_person")
 
-        unit_opts = sorted(df_filtered['UNIT'].dropna().unique().tolist())
-        global_unit_mode = st.sidebar.radio(
-            "UNITフィルター方式", ["含む", "除外"], key="global_unit_mode", horizontal=True
+        sashiban_opts = sorted(df_filtered['指番'].dropna().unique().tolist())
+        global_sashiban_mode = st.sidebar.radio(
+            "指番フィルター方式", ["含む", "除外"], key="global_sashiban_mode", horizontal=True
         )
-        global_unit = st.sidebar.multiselect("UNIT", unit_opts, key="global_unit")
+        global_sashiban = st.sidebar.multiselect("指番", sashiban_opts, key="global_sashiban")
 
         # Apply filters
         if global_field1 != 'すべて':
@@ -386,11 +386,11 @@ with tab_analysis:
                 df_filtered = df_filtered[df_filtered['従業員名'].isin(global_person)]
             else:
                 df_filtered = df_filtered[~df_filtered['従業員名'].isin(global_person)]
-        if global_unit:
-            if global_unit_mode == "含む":
-                df_filtered = df_filtered[df_filtered['UNIT'].isin(global_unit)]
+        if global_sashiban:
+            if global_sashiban_mode == "含む":
+                df_filtered = df_filtered[df_filtered['指番'].isin(global_sashiban)]
             else:
-                df_filtered = df_filtered[~df_filtered['UNIT'].isin(global_unit)]
+                df_filtered = df_filtered[~df_filtered['指番'].isin(global_sashiban)]
 
         st.sidebar.info(f"フィルター後: {len(df_filtered):,}件 / {len(df):,}件")
         render_data_status()

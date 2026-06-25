@@ -50,14 +50,16 @@ merged_data (DataFrame)
   → preprocess_df()             # 型変換・無効行除去・USER_FIELD NaN→"未入力"
   → filter_data_by_period()     # 期間フィルタ
   → [大分類・中分類フィルタ適用]  # 単一選択（==）
-  → [個人・UNIT フィルタ適用]     # 複数選択＋含む/除外切替（isin / ~isin）
+  → [個人・指番 フィルタ適用]     # 複数選択＋含む/除外切替（isin / ~isin）
   → create_unified_chart()      # チャート種別自動判定・Plotly グラフ生成
   → create_chart_data_table()   # データテーブル（折りたたみ表示）
 ```
 
-**個人・UNIT フィルターの「含む／除外」:**
-`st.multiselect` で複数選択可能。ラジオボタン（`global_person_mode` / `global_unit_mode`）で
+**個人・指番 フィルターの「含む／除外」:**
+`st.multiselect` で複数選択可能。ラジオボタン（`global_person_mode` / `global_sashiban_mode`）で
 `isin`（含む）と `~isin`（除外）を切り替える。未選択時はフィルタなし（全件表示）。
+指番フィルターはグラフのX軸/グルーピングと同じ派生列「指番」（`WBS要素(代入)`優先、空白時は`UNIT`）
+を対象にする（UNIT列を直接フィルタするものではない）。
 作業大分類・作業中分類は単一選択のカスケードフィルタのまま変更していない。
 
 ---
