@@ -364,21 +364,33 @@ with tab_analysis:
         )
         global_field2 = st.sidebar.selectbox("作業中分類", field2_opts, key="global_field2")
 
-        person_opts = ['すべて'] + sorted(df_filtered['従業員名'].dropna().unique().tolist())
-        global_person = st.sidebar.selectbox("個人", person_opts, key="global_person")
+        person_opts = sorted(df_filtered['従業員名'].dropna().unique().tolist())
+        global_person_mode = st.sidebar.radio(
+            "個人フィルター方式", ["含む", "除外"], key="global_person_mode", horizontal=True
+        )
+        global_person = st.sidebar.multiselect("個人", person_opts, key="global_person")
 
-        unit_opts = ['すべて'] + sorted(df_filtered['UNIT'].dropna().unique().tolist())
-        global_unit = st.sidebar.selectbox("UNIT", unit_opts, key="global_unit")
+        unit_opts = sorted(df_filtered['UNIT'].dropna().unique().tolist())
+        global_unit_mode = st.sidebar.radio(
+            "UNITフィルター方式", ["含む", "除外"], key="global_unit_mode", horizontal=True
+        )
+        global_unit = st.sidebar.multiselect("UNIT", unit_opts, key="global_unit")
 
         # Apply filters
         if global_field1 != 'すべて':
             df_filtered = df_filtered[df_filtered['USER_FIELD_01'] == global_field1]
         if global_field2 != 'すべて':
             df_filtered = df_filtered[df_filtered['USER_FIELD_02'] == global_field2]
-        if global_person != 'すべて':
-            df_filtered = df_filtered[df_filtered['従業員名'] == global_person]
-        if global_unit != 'すべて':
-            df_filtered = df_filtered[df_filtered['UNIT'] == global_unit]
+        if global_person:
+            if global_person_mode == "含む":
+                df_filtered = df_filtered[df_filtered['従業員名'].isin(global_person)]
+            else:
+                df_filtered = df_filtered[~df_filtered['従業員名'].isin(global_person)]
+        if global_unit:
+            if global_unit_mode == "含む":
+                df_filtered = df_filtered[df_filtered['UNIT'].isin(global_unit)]
+            else:
+                df_filtered = df_filtered[~df_filtered['UNIT'].isin(global_unit)]
 
         st.sidebar.info(f"フィルター後: {len(df_filtered):,}件 / {len(df):,}件")
         render_data_status()
