@@ -33,7 +33,7 @@ FIELD_MAPPING: dict[str, str] = {
     '作業中分類': 'USER_FIELD_02',
     '作業小分類': 'USER_FIELD_03',
     '個人':      '従業員名',
-    'WBS要素':   'WBS要素(代入)',
+    '指番':      '指番',
 }
 
 USER_FIELDS = [
@@ -89,6 +89,13 @@ def preprocess_df(raw_df: pd.DataFrame) -> pd.DataFrame:
     for field in USER_FIELDS:
         if field in df.columns:
             df[field] = df[field].fillna('未入力')
+    if 'WBS要素(代入)' in df.columns or 'UNIT' in df.columns:
+        wbs = df['WBS要素(代入)'] if 'WBS要素(代入)' in df.columns else pd.Series('', index=df.index)
+        unit = df['UNIT'] if 'UNIT' in df.columns else pd.Series('', index=df.index)
+        wbs_blank = wbs.isna() | (wbs.astype(str).str.strip() == '')
+        unit_blank = unit.isna() | (unit.astype(str).str.strip() == '')
+        # WBS要素(代入)とUNITの両方が空白でない場合はWBS要素(代入)を採用する
+        df['指番'] = wbs.where(~wbs_blank, unit.where(~unit_blank))
     return df
 
 
@@ -377,10 +384,10 @@ with tab_analysis:
 
         # --- Chart controls -------------------------------------------------
         available_business_cols = get_available_business_content_columns(df_filtered)
-        wbs_option = ['WBS要素'] if 'WBS要素(代入)' in df_filtered.columns else []
+        sashiban_option = ['指番'] if '指番' in df_filtered.columns else []
         axis_choices = (
             ['年月', '作業大分類', '作業中分類', '作業小分類', '個人']
-            + wbs_option
+            + sashiban_option
             + available_business_cols
         )
 
