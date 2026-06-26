@@ -32,7 +32,8 @@ The app automatically loads `merged_efforts.xlsx` from the application directory
 - A single unified chart in 工数分析グラフ — there are no longer separate "display types" (作業内容/時間推移/個人/UNIT); instead the user picks **X軸** and **グルーピング方法** independently from the same option list, and `create_unified_chart()` decides chart type automatically
 - Sidebar filters (global, always applied before the chart is built):
   - 期間 (period) slider — default range is the last 6 year-months in the data
-  - 作業大分類 / 作業中分類 — single-select cascading filters (`==` comparison; 作業中分類 options narrow based on the selected 作業大分類)
+  - 作業大分類 — single-select (`selectbox` with "すべて"); when changed, 作業中分類 selection is reset via `on_change=_reset_field2`
+  - 作業中分類 — `st.multiselect` with a paired "含む／除外" radio button (`isin` / `~isin`); options narrow based on the selected 作業大分類; empty selection means no filtering
   - 個人 / 指番 — `st.multiselect` with a paired "含む／除外" radio button (`isin` / `~isin`); empty selection means no filtering
 - Dynamic business content column detection (`業務内容1`〜`業務内容10`, via `get_available_business_content_columns()`) feeds into the X軸/グルーピング option list
 
@@ -104,7 +105,8 @@ Available after loading data via either データ登録 mode.
 
 1. **Sidebar filters** (global, applied in this order before charting):
    - 期間 slider (year-month range)
-   - 作業大分類 → 作業中分類 (single-select, cascading, `==`)
+   - 作業大分類 (single-select, `==`; changing it resets 作業中分類 selection)
+   - 作業中分類 (multiselect + 含む/除外 radio, `isin`/`~isin`; options cascade from 作業大分類)
    - 個人 (multiselect + 含む/除外 radio, `isin`/`~isin`)
    - 指番 (multiselect + 含む/除外 radio, `isin`/`~isin`, operates on the derived 指番 column)
 
@@ -118,8 +120,10 @@ Available after loading data via either データ登録 mode.
 ### Cascading classification filters (作業大分類 → 作業中分類)
 
 Implemented directly in `app.py` (not a separate utility function):
-- 作業大分類 options come from the period-filtered data; "すべて" means no filter
-- 作業中分類 options are narrowed to rows matching the selected 作業大分類 (or the full period-filtered data if 作業大分類 is "すべて")
+- 作業大分類: single-select `selectbox` with "すべて"; options come from the period-filtered data
+- 作業中分類: `multiselect` + 含む/除外 radio; options narrow to rows matching the selected 作業大分類 (or the full period-filtered data if 作業大分類 is "すべて"); empty selection means no filter
+- When 作業大分類 changes, `_reset_field2()` (on_change callback) clears the 作業中分類 session_state to prevent stale selections
+- 作業大分類 is "すべて" + 作業中分類 has selections → filters by 作業中分類 regardless of which 作業大分類 they belong to
 - 個人/指番 options are *not* narrowed by 作業大分類/作業中分類 — they are computed from the period-filtered data only, independent of the other filters
 
 ### Dynamic Business Content Detection

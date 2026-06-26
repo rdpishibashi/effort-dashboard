@@ -353,16 +353,25 @@ with tab_analysis:
         field1_opts = ['すべて'] + sort_with_config(
             df_filtered['USER_FIELD_01'].dropna().unique().tolist(), 'USER_FIELD_01'
         )
-        global_field1 = st.sidebar.selectbox("作業大分類", field1_opts, key="global_field1")
+
+        def _reset_field2():
+            st.session_state['global_field2'] = []
+
+        global_field1 = st.sidebar.selectbox(
+            "作業大分類", field1_opts, key="global_field1", on_change=_reset_field2
+        )
 
         field2_base = (
             df_filtered[df_filtered['USER_FIELD_01'] == global_field1]
             if global_field1 != 'すべて' else df_filtered
         )
-        field2_opts = ['すべて'] + sort_with_config(
+        field2_opts = sort_with_config(
             field2_base['USER_FIELD_02'].dropna().unique().tolist(), 'USER_FIELD_02'
         )
-        global_field2 = st.sidebar.selectbox("作業中分類", field2_opts, key="global_field2")
+        global_field2_mode = st.sidebar.radio(
+            "作業中分類フィルター方式", ["含む", "除外"], key="global_field2_mode", horizontal=True
+        )
+        global_field2 = st.sidebar.multiselect("作業中分類", field2_opts, key="global_field2")
 
         person_opts = sorted(df_filtered['従業員名'].dropna().unique().tolist())
         global_person_mode = st.sidebar.radio(
@@ -379,8 +388,11 @@ with tab_analysis:
         # Apply filters
         if global_field1 != 'すべて':
             df_filtered = df_filtered[df_filtered['USER_FIELD_01'] == global_field1]
-        if global_field2 != 'すべて':
-            df_filtered = df_filtered[df_filtered['USER_FIELD_02'] == global_field2]
+        if global_field2:
+            if global_field2_mode == "含む":
+                df_filtered = df_filtered[df_filtered['USER_FIELD_02'].isin(global_field2)]
+            else:
+                df_filtered = df_filtered[~df_filtered['USER_FIELD_02'].isin(global_field2)]
         if global_person:
             if global_person_mode == "含む":
                 df_filtered = df_filtered[df_filtered['従業員名'].isin(global_person)]
