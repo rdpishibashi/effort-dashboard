@@ -184,5 +184,12 @@ cython_debug/
 .DS_Store
 **/.DS_Store
 
-# Data file
+# Others
+log*.txt
+.webloc
 *.xlsx
+*.dxf
+*.svg
+*.pdf
+*.png
+*.gif
