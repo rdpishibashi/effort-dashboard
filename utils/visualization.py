@@ -139,6 +139,17 @@ def create_chart_data_table(
 # Unified chart
 # ---------------------------------------------------------------------------
 
+CHART_LINE = '折れ線グラフ'
+CHART_STACKED_LINE = '積算折れ線グラフ'
+CHART_STACKED_BAR = '積算棒グラフ'
+CHART_TYPES = [CHART_LINE, CHART_STACKED_LINE, CHART_STACKED_BAR]
+
+
+def default_chart_type(x_field: str) -> str:
+    """X軸が年月なら折れ線グラフ、それ以外は積算棒グラフ。"""
+    return CHART_LINE if x_field == '年月' else CHART_STACKED_BAR
+
+
 def create_unified_chart(
     df: pd.DataFrame,
     x_field: str,
@@ -146,19 +157,26 @@ def create_unified_chart(
     x_axis_label: str,
     grouping_label: str,
     range_label: str | None = None,
+    chart_type: str | None = None,
 ) -> 'plotly.graph_objs.Figure':
     """
-    Create an appropriate Plotly chart based on x_field and group_field.
+    Create a Plotly chart for x_field / group_field.
 
-    Chart type rules:
-    - x_field == '年月'              → line chart (time series)
-    - x_field == group_field          → ungrouped bar chart
-    - otherwise                       → stacked bar chart
+    chart_type (None → default_chart_type(x_field)):
+    - 折れ線グラフ   : line chart (markers); single line when x_field == group_field
+    - 積算折れ線グラフ: stacked area; missing (x, group) cells are filled with 0
+    - 積算棒グラフ   : stacked bar; plain bar when x_field == group_field
     """
+    if chart_type is None:
+        chart_type = default_chart_type(x_field)
+    if chart_type not in CHART_TYPES:
+        raise ValueError(f"unknown chart_type: {chart_type}")
+
     title = f"工数分析 ({range_label})" if range_label else "工数分析"
+    ungrouped = x_field == group_field
 
     # --- Aggregate ---------------------------------------------------------
-    if x_field == group_field:
+    if ungrouped:
         agg = df.groupby([x_field])['作業時間(h)'].sum().reset_index()
     else:
         agg = df.groupby([x_field, group_field])['作業時間(h)'].sum().reset_index()
@@ -170,87 +188,66 @@ def create_unified_chart(
         else sort_with_config(agg[x_field].dropna().unique().tolist(), x_field)
     )
     group_values = (
-        sort_with_config(agg[group_field].dropna().unique().tolist(), group_field)
-        if x_field != group_field
-        else x_values
+        x_values if ungrouped
+        else sort_with_config(agg[group_field].dropna().unique().tolist(), group_field)
     )
+
+    # Stacked area needs every (x, group) cell, otherwise stacks are drawn wrongly
+    if chart_type == CHART_STACKED_LINE and not ungrouped:
+        full = pd.MultiIndex.from_product([x_values, group_values], names=[x_field, group_field])
+        agg = (
+            agg.set_index([x_field, group_field])['作業時間(h)']
+            .reindex(full, fill_value=0.0)
+            .reset_index()
+        )
 
     # Apply categorical ordering for correct sort in Plotly
     agg = agg.copy()
     agg[x_field] = pd.Categorical(agg[x_field], categories=x_values, ordered=True)
-    if x_field != group_field:
+    if not ungrouped:
         agg[group_field] = pd.Categorical(agg[group_field], categories=group_values, ordered=True)
         agg = agg.sort_values([x_field, group_field])
     else:
         agg = agg.sort_values(x_field)
 
     # --- Build figure ------------------------------------------------------
-    if x_field == '年月':
-        cat_orders = {group_field: group_values} if x_field != group_field else {}
-        fig = px.line(
-            agg,
-            x=x_field, y='作業時間(h)', color=group_field,
-            markers=True, title=title,
-            custom_data=[group_field],
-            category_orders=cat_orders,
-        )
-        fig.update_traces(
-            hovertemplate=(
-                f"{x_axis_label}：%{{x}}<br>"
-                f"{grouping_label}：%{{customdata[0]}}<br>"
-                "作業時間(h)：%{y:,.1f}<extra></extra>"
-            )
-        )
-        fig.update_xaxes(
-            categoryorder='array', categoryarray=x_values,
-            tickmode='array', tickvals=x_values, ticktext=x_values,
-            tickangle=-45, title=x_axis_label,
-        )
+    common = dict(x=x_field, y='作業時間(h)', title=title)
+    grouped_kwargs = dict(
+        color=group_field,
+        custom_data=[group_field],
+        category_orders={x_field: x_values, group_field: group_values},
+    )
 
-    elif x_field == group_field:
-        fig = px.bar(
-            agg,
-            x=x_field, y='作業時間(h)',
-            title=title,
-            category_orders={x_field: x_values},
-        )
-        fig.update_traces(
-            hovertemplate=(
-                f"{x_axis_label}：%{{x}}<br>"
-                "作業時間(h)：%{y:,.1f}<extra></extra>"
-            )
-        )
-        fig.update_xaxes(
-            categoryorder='array', categoryarray=x_values,
-            title=x_axis_label,
-        )
-
+    if chart_type == CHART_LINE:
+        fig = px.line(agg, markers=True, **common, **(grouped_kwargs if not ungrouped else {}))
+    elif chart_type == CHART_STACKED_LINE:
+        fig = px.area(agg, **common, **(grouped_kwargs if not ungrouped else {}))
     else:
         fig = px.bar(
-            agg,
-            x=x_field, y='作業時間(h)', color=group_field,
-            barmode='stack', title=title,
-            custom_data=[group_field],
-            category_orders={x_field: x_values, group_field: group_values},
+            agg, **common,
+            **(dict(barmode='stack', **grouped_kwargs) if not ungrouped else {}),
         )
-        fig.update_traces(
-            hovertemplate=(
-                f"{x_axis_label}：%{{x}}<br>"
-                f"{grouping_label}：%{{customdata[0]}}<br>"
-                "作業時間(h)：%{y:,.1f}<extra></extra>"
-            )
+
+    if ungrouped:
+        hover = f"{x_axis_label}：%{{x}}<br>作業時間(h)：%{{y:,.1f}}<extra></extra>"
+    else:
+        hover = (
+            f"{x_axis_label}：%{{x}}<br>"
+            f"{grouping_label}：%{{customdata[0]}}<br>"
+            "作業時間(h)：%{y:,.1f}<extra></extra>"
         )
-        fig.update_xaxes(
-            categoryorder='array', categoryarray=x_values,
-            title=x_axis_label,
-        )
+    fig.update_traces(hovertemplate=hover)
+
+    fig.update_xaxes(categoryorder='array', categoryarray=x_values, title=x_axis_label)
+    if x_field == '年月':
+        fig.update_xaxes(tickmode='array', tickvals=x_values, ticktext=x_values, tickangle=-45)
 
     fig.update_layout(
         height=500,
         yaxis_title='作業時間(h)',
         yaxis=dict(tickformat=','),
     )
-    if x_field != group_field:
+    if not ungrouped:
         fig.update_layout(legend_title_text=grouping_label)
 
     return fig
