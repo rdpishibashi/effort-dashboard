@@ -5,6 +5,7 @@ Effort-Dashboard - 工数データマージ・分析ツール
 複数の月次工数データをマージし、様々な視点から分析・可視化する
 """
 
+import hashlib
 import io
 import os
 import traceback
@@ -13,10 +14,18 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
-from utils.data_merger import process_multiple_monthly_files
+from utils.data_merger import (
+    load_monthly_files,
+    merge_effort_data,
+    read_existing_data,
+    split_business_content,
+    summarize_year_month_overlap,
+)
 from utils.visualization import (
+    CHART_TYPES,
     create_chart_data_table,
     create_unified_chart,
+    default_chart_type,
     filter_data_by_period,
     get_available_business_content_columns,
     sort_with_config,
@@ -65,6 +74,7 @@ def render_sidebar_overview(placeholder) -> None:
                 "- フィルター設定（左側のウィンドウ）：分析対象データを絞り込む\n"
                 "- X軸：X軸に採用するデータ種別を選択する\n"
                 "- グルーピング方法：グラフの凡例（系列）を選択する\n"
+                "- グラフ種別：折れ線／積算折れ線／積算棒グラフを選択する\n"
             )
 
 
@@ -98,6 +108,18 @@ def preprocess_df(raw_df: pd.DataFrame) -> pd.DataFrame:
         # WBS要素(代入)とUNITの両方が空白でない場合はWBS要素(代入)を採用する
         df['指番'] = wbs.where(~wbs_blank, unit.where(~unit_blank))
     return df
+
+
+@st.cache_data(show_spinner=False)
+def load_monthly_cached(files_bytes: tuple) -> pd.DataFrame | None:
+    """月次ファイル（bytes）を merged_efforts 形式に変換して結合する（結果をキャッシュ）。"""
+    return load_monthly_files([io.BytesIO(b) for b in files_bytes])
+
+
+@st.cache_data(show_spinner=False)
+def read_existing_cached(file_bytes: bytes) -> pd.DataFrame:
+    """既存の総工数ファイル（bytes）を読み込んでクリーニングする（結果をキャッシュ）。"""
+    return read_existing_data(io.BytesIO(file_bytes))
 
 
 def make_stats_pivot(df: pd.DataFrame) -> pd.DataFrame:
@@ -243,24 +265,69 @@ with tab_data_entry:
 
         st.divider()
 
+        monthly_df = None
+        existing_clean_df = None
+        skip_year_months: set[tuple[int, int]] = set()
+
         if monthly_files:
-            if st.button("データマージ・業務内容分割を実行", type="primary"):
+            with st.spinner("月次データを読み込み中..."):
+                monthly_df = load_monthly_cached(tuple(f.getvalue() for f in monthly_files))
+                if existing_file:
+                    try:
+                        existing_clean_df = read_existing_cached(existing_file.getvalue())
+                    except Exception as e:
+                        st.error(f"既存ファイル読み込みエラー: {e}")
+
+            if monthly_df is None:
+                st.error("❌ 月次データを読み込めませんでした（'YubiNippoDB' シートなどを確認してください）")
+            elif existing_clean_df is not None:
+                overlap = summarize_year_month_overlap(existing_clean_df, monthly_df)
+                if overlap.empty:
+                    st.info("既存データと重複する年月はありません。")
+                else:
+                    st.subheader("重複する年月")
+                    st.caption(
+                        "チェックを入れた年月は、既存データを削除して月次データで上書きします。"
+                        "チェックを外すと既存データを残し、月次データのその年月は取り込みません。"
+                    )
+                    sig = hashlib.md5(
+                        "|".join(f"{f.name}:{f.size}" for f in monthly_files + ([existing_file] if existing_file else [])).encode()
+                    ).hexdigest()[:8]
+                    widths = [1, 2, 3, 3]
+                    header = st.columns(widths)
+                    for col, label in zip(header, ["上書き", "年月", "既存データ件数", "上書きするデータ件数"]):
+                        col.markdown(f"**{label}**")
+                    for row in overlap.itertuples(index=False):
+                        ck = f"overwrite_{sig}_{row.年}_{row.月}"
+                        if ck not in st.session_state:
+                            st.session_state[ck] = True
+                        c_chk, c_ym, c_old, c_new = st.columns(widths)
+                        c_chk.checkbox(
+                            f"{row.年}-{row.月:02d} を上書き", key=ck, label_visibility="collapsed"
+                        )
+                        c_ym.write(f"{row.年}-{row.月:02d}")
+                        c_old.write(f"{row.既存データ件数:,}")
+                        c_new.write(f"{row.上書きするデータ件数:,}")
+                        if not st.session_state[ck]:
+                            skip_year_months.add((int(row.年), int(row.月)))
+
+            if monthly_df is not None and st.button("データマージ・業務内容分割を実行", type="primary"):
                 try:
                     progress_bar = st.progress(0.0)
                     status_text = st.empty()
 
-                    def update_progress(progress, status):
-                        progress_bar.progress(float(max(0.0, min(1.0, progress))))
-                        status_text.text(status)
-
-                    if existing_file:
-                        existing_file.seek(0)
-                    for f in monthly_files:
-                        f.seek(0)
-
-                    final_data = process_multiple_monthly_files(
-                        monthly_files, existing_file, progress_callback=update_progress
+                    progress_bar.progress(0.2)
+                    status_text.text("既存データとマージ中...")
+                    merged = merge_effort_data(
+                        existing_clean_df, monthly_df, skip_year_months=skip_year_months
                     )
+                    final_data = None
+                    if merged is not None:
+                        progress_bar.progress(0.5)
+                        status_text.text("業務内容分割中...")
+                        final_data = split_business_content(merged)
+                        progress_bar.progress(1.0)
+                        status_text.text("処理完了")
 
                     if final_data is not None:
                         st.session_state.merged_data = final_data
@@ -417,11 +484,21 @@ with tab_analysis:
             + available_business_cols
         )
 
+        def _reset_chart_type():
+            """X軸を変えたら、グラフ種別をそのX軸の既定値に戻す。"""
+            x = FIELD_MAPPING.get(st.session_state['x_axis'], st.session_state['x_axis'])
+            st.session_state['chart_type'] = default_chart_type(x)
+
+        if 'chart_type' not in st.session_state:
+            x0 = st.session_state.get('x_axis', axis_choices[0])
+            st.session_state['chart_type'] = default_chart_type(FIELD_MAPPING.get(x0, x0))
+
         col1, col2 = st.columns(2)
         with col1:
-            x_axis = st.selectbox("X軸", axis_choices, key="x_axis")
+            x_axis = st.selectbox("X軸", axis_choices, key="x_axis", on_change=_reset_chart_type)
         with col2:
             grouping = st.selectbox("グルーピング方法", axis_choices, key="grouping")
+        chart_type = st.radio("グラフ種別", CHART_TYPES, horizontal=True, key="chart_type")
 
         if len(df_filtered) > 0:
             x_field = FIELD_MAPPING.get(x_axis, x_axis)
@@ -443,6 +520,7 @@ with tab_analysis:
                 x_axis_label=x_axis,
                 grouping_label=grouping,
                 range_label=period_label,
+                chart_type=chart_type,
             )
             st.plotly_chart(fig, width='stretch', config=None)
 

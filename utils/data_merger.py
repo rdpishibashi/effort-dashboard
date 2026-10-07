@@ -170,82 +170,123 @@ def process_monthly_data(monthly_file_input, sheet_name=None):
         return None
 
 
-# 重複行の判定に使うキー列（年・月・従業員名・UNIT・USER_FIELD_01〜05）
-DEDUP_KEY_COLUMNS = [
-    '年', '月', '従業員名', 'UNIT',
-    'USER_FIELD_01', 'USER_FIELD_02', 'USER_FIELD_03', 'USER_FIELD_04', 'USER_FIELD_05',
-]
+def _clean_existing_data(existing_df):
+    """既存データのクリーニング（年・月を整数化し、作業時間(h)<=0 や年月欠損の行を除外）"""
+    existing_df = existing_df.copy()
+    existing_df['年'] = pd.to_numeric(existing_df['年'], errors='coerce').astype('Int64')
+    existing_df['月'] = pd.to_numeric(existing_df['月'], errors='coerce').astype('Int64')
+    before = len(existing_df)
+    existing_df = existing_df[
+        (pd.to_numeric(existing_df['作業時間(h)'], errors='coerce') > 0) &
+        (existing_df['年'].notna()) & (existing_df['月'].notna())
+    ]
+    print(f"既存データクリーニング: {before}行 → {len(existing_df)}行 ({before - len(existing_df)}行除外)")
+    return existing_df
 
 
-def _build_dedup_keys(df):
-    """DEDUP_KEY_COLUMNSの値を連結した行識別キーのSeriesを返す"""
-    key_df = pd.DataFrame(index=df.index)
-    key_df['年'] = pd.to_numeric(df['年'], errors='coerce').astype('Int64').astype(str)
-    key_df['月'] = pd.to_numeric(df['月'], errors='coerce').astype('Int64').astype(str)
-    for col in DEDUP_KEY_COLUMNS[2:]:
-        key_df[col] = df[col].fillna('').astype(str) if col in df.columns else ''
-    return key_df.astype(str).agg('|'.join, axis=1)
-
-
-def merge_effort_data(existing_file_input, new_data_df):
+def read_existing_data(existing_file_input):
     """
-    既存のmerged_effortsファイルに新しいデータを追加
-    existing_file_input: ファイルパス（文字列）またはBytesIOオブジェクト
-    new_data_df: 新しいデータのDataFrame
+    既存の総工数データを読み込んでクリーニングする。
+    existing_file_input: ファイルパス / BytesIO / DataFrame / None（Noneの場合はNoneを返す）
+    """
+    if existing_file_input is None:
+        return None
+    if isinstance(existing_file_input, pd.DataFrame):
+        existing_df = existing_file_input
+    else:
+        existing_df = pd.read_excel(existing_file_input, engine='openpyxl')
+        print(f"既存データ読み込み完了: {len(existing_df)}行")
+    return _clean_existing_data(existing_df)
 
-    年・月・従業員名・UNIT・USER_FIELD_01〜05 の組み合わせが
-    既存データと重複する行は、新しいデータ（月次ファイル側）で上書きする。
 
-    existing_file_inputがNoneの場合は、新規作成として扱う
+def load_monthly_files(monthly_files, progress_callback=None):
+    """
+    複数の月次ファイルを process_monthly_data() で変換して結合する。
+    読み込みに失敗したファイルはスキップし、全て失敗した場合は None を返す。
+    """
+    all_monthly_data = []
+    for i, monthly_file in enumerate(monthly_files):
+        if progress_callback:
+            progress = 0.1 + (i / len(monthly_files)) * 0.4
+            progress_callback(progress, f"月次データ処理中... ({i+1}/{len(monthly_files)})")
+        print(f"\n=== 月次データ{i+1}処理開始 ===")
+        monthly_data = process_monthly_data(monthly_file)
+        if monthly_data is None:
+            print(f"月次データ{i+1}の処理に失敗しました")
+            continue
+        all_monthly_data.append(monthly_data)
+
+    if not all_monthly_data:
+        print("処理可能な月次データがありません")
+        return None
+    combined = pd.concat(all_monthly_data, ignore_index=True)
+    print(f"\n全月次データ結合完了: {len(combined)}行")
+    return combined
+
+
+def summarize_year_month_overlap(existing_df, new_df):
+    """
+    既存データと月次データの両方に存在する年月ごとの件数を返す。
+
+    Returns:
+        列 年・月・既存データ件数・上書きするデータ件数 の DataFrame（年月昇順）。
+        既存データが無い・重複が無い場合は空の DataFrame。
+    """
+    columns = ['年', '月', '既存データ件数', '上書きするデータ件数']
+    if existing_df is None or len(existing_df) == 0 or new_df is None or len(new_df) == 0:
+        return pd.DataFrame(columns=columns)
+    existing_counts = existing_df.groupby(['年', '月']).size().rename('既存データ件数')
+    new_counts = new_df.groupby(['年', '月']).size().rename('上書きするデータ件数')
+    overlap = pd.concat([existing_counts, new_counts], axis=1, join='inner').reset_index()
+    overlap['年'] = overlap['年'].astype(int)
+    overlap['月'] = overlap['月'].astype(int)
+    return overlap.sort_values(['年', '月']).reset_index(drop=True)[columns]
+
+
+def merge_effort_data(existing_file_input, new_data_df, skip_year_months=None):
+    """
+    既存の総工数データに月次データをマージする。
+
+    existing_file_input: ファイルパス / BytesIO / DataFrame / None（Noneは新規作成扱い）
+    skip_year_months: 上書きしない (年, 月) の集合。
+
+    既存データと月次データの両方に存在する年月は、年月単位で置換する。
+    - skip_year_months に含まれない年月: 既存データのその年月を全削除し、月次データを採用
+    - skip_year_months に含まれる年月: 既存データを残し、月次データは取り込まない
+    重複しない年月の月次データは、そのまま追加する。
     """
     try:
-        # 既存ファイルが指定されていない場合は新規作成
-        if existing_file_input is None:
+        existing_df = read_existing_data(existing_file_input)
+        skip = {(int(y), int(m)) for y, m in (skip_year_months or [])}
+
+        if existing_df is None:
             print("既存ファイルなし - 新規作成モード")
             merged_df = new_data_df.copy()
         else:
-            # ファイル入力の種類を判定して適切に読み込み
-            if hasattr(existing_file_input, 'read'):
-                # BytesIOオブジェクトの場合
-                existing_df = pd.read_excel(existing_file_input, engine='openpyxl')
-            else:
-                # ファイルパスの場合
-                existing_df = pd.read_excel(existing_file_input)
+            existing_ym = set(zip(existing_df['年'].astype(int), existing_df['月'].astype(int)))
+            new_ym = list(zip(
+                pd.to_numeric(new_data_df['年']).astype(int),
+                pd.to_numeric(new_data_df['月']).astype(int),
+            ))
+            overlap_ym = existing_ym & set(new_ym)
+            overwrite_ym = overlap_ym - skip
 
-            print(f"既存データ読み込み完了: {len(existing_df)}行")
+            # 上書きする年月の既存データを削除
+            existing_ym_series = pd.Series(
+                list(zip(existing_df['年'].astype(int), existing_df['月'].astype(int))),
+                index=existing_df.index,
+            )
+            existing_df = existing_df[~existing_ym_series.isin(overwrite_ym)]
+            # 上書きしない重複年月の月次データを除外
+            new_mask = pd.Series([ym not in (overlap_ym & skip) for ym in new_ym],
+                                 index=new_data_df.index)
+            new_part = new_data_df[new_mask]
+            print(f"重複年月: {len(overlap_ym)}件（上書き{len(overwrite_ym)}件・スキップ{len(overlap_ym & skip)}件）")
 
-            # 既存データのクリーニング
-            # 1. 年と月を数字に統一
-            existing_df['年'] = pd.to_numeric(existing_df['年'], errors='coerce').astype('Int64')
-            existing_df['月'] = pd.to_numeric(existing_df['月'], errors='coerce').astype('Int64')
+            merged_df = pd.concat([existing_df, new_part], ignore_index=True)
 
-            # 2. 作業時間が0以下のデータを除外
-            before_existing = len(existing_df)
-            existing_df = existing_df[
-                (pd.to_numeric(existing_df['作業時間(h)'], errors='coerce') > 0) &
-                (existing_df['年'].notna()) & (existing_df['月'].notna())
-            ]
-            after_existing = len(existing_df)
-
-            print(f"既存データクリーニング: {before_existing}行 → {after_existing}行 ({before_existing - after_existing}行除外)")
-
-            # 重複チェック（年・月・従業員名・UNIT・USER_FIELD_01〜05の組み合わせ）
-            new_keys = set(_build_dedup_keys(new_data_df))
-            existing_keys = _build_dedup_keys(existing_df)
-
-            overlap_mask = existing_keys.isin(new_keys)
-            if overlap_mask.any():
-                print(f"警告: 重複する行があります: {overlap_mask.sum()}行 → 月次データで上書きします")
-                existing_df = existing_df[~overlap_mask]
-
-            # データを結合
-            merged_df = pd.concat([existing_df, new_data_df], ignore_index=True)
-
-        # 年月でソート
         merged_df = merged_df.sort_values(['年', '月', '従業員名'])
-
         print(f"マージ完了: {len(merged_df)}行")
-
         return merged_df
 
     except Exception as e:
@@ -469,58 +510,33 @@ def split_business_content(df):
     return df
 
 
-def process_multiple_monthly_files(monthly_files, existing_file=None, progress_callback=None):
+def process_multiple_monthly_files(monthly_files, existing_file=None, progress_callback=None,
+                                   skip_year_months=None):
     """
     複数の月次データファイルを処理して統合工数データを作成
 
     Args:
         monthly_files: 月次データファイルのリスト（BytesIOオブジェクトまたはファイルパス）
-        existing_file: 既存の総工数データファイル（オプション、BytesIOオブジェクトまたはファイルパス）
+        existing_file: 既存の総工数データファイル（オプション、BytesIO / ファイルパス / DataFrame）
         progress_callback: 進捗コールバック関数
+        skip_year_months: 重複していても上書きしない (年, 月) の集合
 
     Returns:
         処理済みデータフレーム
     """
     try:
-        all_monthly_data = []
-
-        # 各月次ファイルを処理
-        for i, monthly_file in enumerate(monthly_files):
-            if progress_callback:
-                progress = 0.1 + (i / len(monthly_files)) * 0.4
-                progress_callback(progress, f"月次データ処理中... ({i+1}/{len(monthly_files)})")
-
-            print(f"\n=== 月次データ{i+1}処理開始 ===")
-            monthly_data = process_monthly_data(monthly_file)
-
-            if monthly_data is None:
-                print(f"月次データ{i+1}の処理に失敗しました")
-                continue
-
-            all_monthly_data.append(monthly_data)
-
-        if not all_monthly_data:
-            print("処理可能な月次データがありません")
+        combined_monthly_data = load_monthly_files(monthly_files, progress_callback)
+        if combined_monthly_data is None:
             return None
 
-        # 全ての月次データを結合
-        if progress_callback:
-            progress_callback(0.5, "月次データ結合中...")
-
-        combined_monthly_data = pd.concat(all_monthly_data, ignore_index=True)
-        print(f"\n全月次データ結合完了: {len(combined_monthly_data)}行")
-
-        # 既存データとマージ
         if progress_callback:
             progress_callback(0.6, "既存データとマージ中...")
 
-        merged_data = merge_effort_data(existing_file, combined_monthly_data)
-
+        merged_data = merge_effort_data(existing_file, combined_monthly_data, skip_year_months)
         if merged_data is None:
             print("データマージに失敗しました")
             return None
 
-        # 業務内容分割
         if progress_callback:
             progress_callback(0.8, "業務内容分割中...")
 
